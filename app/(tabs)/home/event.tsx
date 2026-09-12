@@ -10,6 +10,7 @@ import moment from "moment";
 import { useEffect, useMemo, useState } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
 import { Button, Text } from "react-native-paper";
+import { EVENT_TIMEZONE_LABEL, eventMoment, isEventPast } from "@/app/composable/event_dates";
 
 /** A time is only worth showing if the editor actually set one.
  *
@@ -18,10 +19,11 @@ import { Button, Text } from "react-native-paper";
  * at least one end of the event carries a real time.
  */
 function hasMeaningfulTime(start?: Date | string, end?: Date | string) {
+  // Judged in Armenia time, the time the editor typed. An all-day event entered
+  // as midnight in Armenia is not midnight on a phone set to another zone.
   return [start, end].some((value) => {
-    if (!value) return false;
-    const m = moment(value);
-    return m.isValid() && (m.hours() !== 0 || m.minutes() !== 0);
+    const m = eventMoment(value);
+    return !!m && (m.hours() !== 0 || m.minutes() !== 0);
   });
 }
 
@@ -31,7 +33,6 @@ export default function Page() {
   const { user } = useAuth();
   const { theme } = useAppTheme();
   const { getLocalizedText } = useLanguage();
-  const style = useStyle({ theme });
 
   const [event, setEvent] = useState<Event>();
   const [venueName, setVenueName] = useState<string>();
@@ -65,19 +66,27 @@ export default function Page() {
   }, []);
 
   const showTime = useMemo(() => hasMeaningfulTime(event?.startDate, event?.endDate), [event]);
-  const dateFormat = showTime ? "ddd, D MMM YYYY" : "ddd, D MMM YYYY";
+  /** Ended events keep all their details but lose booking - there is nothing
+   * left to book. Judged by the end time, so an event on right now still books. */
+  const isPast = useMemo(() => !!event && isEventPast(event), [event]);
+  const accent = isPast ? theme.colors.grey2 : theme.colors.primary;
+  // A plain function despite the name - safe to call once isPast is known.
+  const style = useStyle({ theme, past: isPast });
 
-  /** One line per date, with the time on its own row when there is one. */
+  /** Date and time in Armenia wall-clock time - what the editor typed - rather
+   * than converted to the phone's timezone, which shifted every event by the
+   * difference between the two. */
   function formatWhen(value?: Date) {
-    if (!value) return { date: "", time: "" };
-    const m = moment(value);
-    if (!m.isValid()) return { date: "", time: "" };
-    return { date: m.format(dateFormat), time: showTime ? m.format("HH:mm") : "" };
+    const m = eventMoment(value);
+    if (!m) return { date: "", time: "" };
+    return { date: m.format("ddd, D MMM YYYY"), time: showTime ? m.format("HH:mm") : "" };
   }
 
   const start = formatWhen(event?.startDate);
   const end = event?.endDate ? formatWhen(event.endDate) : null;
-  const sameDay = !!(event?.endDate && moment(event.startDate).isSame(moment(event.endDate), "day"));
+  const startM = eventMoment(event?.startDate);
+  const endM = eventMoment(event?.endDate);
+  const sameDay = !!(startM && endM && startM.isSame(endM, "day"));
 
   /** A single row of the details card.
    *
@@ -140,10 +149,24 @@ export default function Page() {
             )}
           </View>
 
+          {isPast && (
+            <View style={style.endedBanner}>
+              <CalendarIcon fill={theme.colors.grey2} size={18} />
+              <View style={{ flex: 1 }}>
+                <Text variant="labelMedium" style={{ color: theme.colors.text }}>
+                  This event has ended
+                </Text>
+                <Text variant="bodySmall" style={{ color: theme.colors.grey2 }}>
+                  The details below are kept for reference.
+                </Text>
+              </View>
+            </View>
+          )}
+
           {/* When & where */}
           <View style={style.card}>
             <DetailRow
-              icon={<CalendarOutlinedIcon fill={theme.colors.primary} size={20} />}
+              icon={<CalendarOutlinedIcon fill={accent} size={20} />}
               label={sameDay ? "Date" : "Starts"}
               value={start.date}
               hint={start.time}
@@ -151,7 +174,7 @@ export default function Page() {
             />
             {end && !sameDay && (
               <DetailRow
-                icon={<CalendarIcon fill={theme.colors.primary} size={20} />}
+                icon={<CalendarIcon fill={accent} size={20} />}
                 label="Ends"
                 value={end.date}
                 hint={end.time}
@@ -160,16 +183,21 @@ export default function Page() {
             )}
             {end && sameDay && showTime && (
               <DetailRow
-                icon={<CalendarIcon fill={theme.colors.primary} size={20} />}
+                icon={<CalendarIcon fill={accent} size={20} />}
                 label="Time"
                 value={`${start.time} - ${end.time}`}
                 last={!venueName}
               />
             )}
             {!!venueName && (
-              <DetailRow icon={<LocationIcon fill={theme.colors.primary} size={20} />} label="Venue" value={venueName} last />
+              <DetailRow icon={<LocationIcon fill={accent} size={20} />} label="Venue" value={venueName} last />
             )}
           </View>
+          {showTime && (
+            <Text variant="bodySmall" style={style.timezoneNote}>
+              Times are {EVENT_TIMEZONE_LABEL.toLowerCase()} (UTC+4)
+            </Text>
+          )}
 
           {/* Full description */}
           {!!event.content && (
@@ -180,8 +208,8 @@ export default function Page() {
             </View>
           )}
 
-          {/* Reservation */}
-          {authenticated && (
+          {/* Reservation - not offered once the event is over */}
+          {authenticated && !isPast && (
             <View style={{ marginBottom: theme.spacing.lg }}>
               <Text variant="titleMedium" style={style.sectionTitle}>
                 Reservation
@@ -221,17 +249,19 @@ export default function Page() {
             </View>
           )}
 
-          {/* Footer */}
-          <View style={style.footer}>
-            <Button
-              mode="contained"
-              style={{ borderRadius: theme.borderRadius.sm }}
-              contentStyle={{ paddingVertical: theme.spacing.xxs }}
-              textColor={theme.colors.textOnPrimary}
-            >
-              {authenticated ? "Book now" : "Sign up to book now"}
-            </Button>
-          </View>
+          {/* Footer - no booking or sign-up for an event that has already happened */}
+          {!isPast && (
+            <View style={style.footer}>
+              <Button
+                mode="contained"
+                style={{ borderRadius: theme.borderRadius.sm }}
+                contentStyle={{ paddingVertical: theme.spacing.xxs }}
+                textColor={theme.colors.textOnPrimary}
+              >
+                {authenticated ? "Book now" : "Sign up to book now"}
+              </Button>
+            </View>
+          )}
         </ScrollView>
       ) : (
         <ErrorPage message="Details for this item aren't available" />
@@ -240,7 +270,7 @@ export default function Page() {
   );
 }
 
-const useStyle = ({ theme }: { theme: AppTheme }) =>
+const useStyle = ({ theme, past = false }: { theme: AppTheme; past?: boolean }) =>
   StyleSheet.create({
     center: { flex: 1, justifyContent: "center", alignContent: "center" },
     topSection: {
@@ -286,8 +316,27 @@ const useStyle = ({ theme }: { theme: AppTheme }) =>
       rowGap: 2,
     },
     hint: {
-      color: theme.colors.primary,
+      color: past ? theme.colors.grey2 : theme.colors.primary,
       marginLeft: theme.spacing.sm,
+    },
+    endedBanner: {
+      flexDirection: "row",
+      alignItems: "center",
+      columnGap: theme.spacing.sm,
+      marginHorizontal: theme.spacing.lg,
+      marginBottom: theme.spacing.md,
+      paddingVertical: theme.spacing.sm,
+      paddingHorizontal: theme.spacing.md,
+      borderRadius: theme.borderRadius.md,
+      backgroundColor: theme.colors.background,
+      borderWidth: 1,
+      borderColor: theme.colors.grey4,
+    },
+    timezoneNote: {
+      color: theme.colors.grey2,
+      marginHorizontal: theme.spacing.lg,
+      marginTop: -theme.spacing.sm,
+      marginBottom: theme.spacing.lg,
     },
     contentSection: {
       paddingHorizontal: theme.spacing.lg,

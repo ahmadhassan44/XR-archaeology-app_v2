@@ -2,33 +2,46 @@ import { Event } from "@models";
 import { getThumb } from "@/plugins/utils";
 import { AppTheme, useAppTheme } from "@/providers/style_provider";
 import { Link } from "expo-router";
-import moment from "moment";
 import { Image, Pressable, StyleSheet, View } from "react-native";
 import { Text } from "react-native-paper";
 import { Routes } from "@/app/composable/routes";
 import { useLocalizedText } from "@/hooks/useLocalizedText";
+import { eventMoment } from "@/app/composable/event_dates";
 
 const IMAGE_WIDTH = 120;
 const LABEL_WIDTH = 64;
 
-export default function EventItem({ _id, name, briefDesc, images, startDate, endDate, ...props }: Event) {
-    const { theme } = useAppTheme();
-    const style = useStyle({ theme });
-    const localize = useLocalizedText();
-    const image: string | undefined = images?.[0];
-  
-    // Handle multilingual text
-    const localizedName = typeof name === 'string' ? name : localize(name);
-    const localizedBriefDesc = typeof briefDesc === 'string' ? briefDesc : localize(briefDesc);
-  function getDateLabel(date: Date) {
-    if (!date) return <></>;
+type Props = Event & {
+  /** Render as an ended event: a slate date block and a quieter image, so a
+   * card in the past list reads as history rather than something to attend. */
+  past?: boolean;
+};
+
+export default function EventItem({ _id, name, briefDesc, images, startDate, endDate, past, ...props }: Props) {
+  const { theme } = useAppTheme();
+  const style = useStyle({ theme, past: !!past });
+  const localize = useLocalizedText();
+  const image: string | undefined = images?.[0];
+
+  // Handle multilingual text
+  const localizedName = typeof name === "string" ? name : localize(name);
+  const localizedBriefDesc = typeof briefDesc === "string" ? briefDesc : localize(briefDesc);
+
+  // Dates are Armenia days, so the card agrees with the calendar and the detail
+  // page wherever the phone's clock is set.
+  const start = eventMoment(startDate);
+  const end = eventMoment(endDate);
+  const multiDay = !!(start && end && !start.isSame(end, "day"));
+
+  function getDateLabel(m: ReturnType<typeof eventMoment>) {
+    if (!m) return null;
     return (
       <>
         <Text variant="headlineSmall" style={{ color: theme.colors.textOnPrimary }}>
-          {moment(date).date()}
+          {m.date()}
         </Text>
         <Text variant="bodySmall" style={{ fontWeight: "700", color: theme.colors.textOnPrimary, marginTop: -8 }}>
-          {moment(date).format("MMM")}
+          {m.format("MMM")}
         </Text>
       </>
     );
@@ -40,7 +53,7 @@ export default function EventItem({ _id, name, briefDesc, images, startDate, end
         <View style={style.card}>
           {image ? (
             <View style={style.imagePlaceholder}>
-              <Image source={{ uri: getThumb(image) }} style={style.image} />
+              <Image source={{ uri: getThumb(image) }} style={[style.image, past && style.imagePast]} />
             </View>
           ) : (
             <View style={style.imagePlaceholder} />
@@ -49,15 +62,18 @@ export default function EventItem({ _id, name, briefDesc, images, startDate, end
             <Text variant="labelLarge" style={{ color: theme.colors.text }}>
               {localizedName}
             </Text>
-            <Text variant="bodyMedium" style={{ color: theme.colors.text }}>
-              {localizedBriefDesc}
-            </Text>
+            {!!localizedBriefDesc && (
+              <Text variant="bodyMedium" style={{ color: past ? theme.colors.grey2 : theme.colors.text }} numberOfLines={3}>
+                {localizedBriefDesc}
+              </Text>
+            )}
           </View>
           <View style={style.dateStack}>
             <View style={style.dateContainer}>
-              {getDateLabel(startDate)}
-              {endDate && <View style={style.toSign} />}
-              {endDate && getDateLabel(endDate)}
+              {getDateLabel(start)}
+              {/* A one-day event gets one date, not the same date twice. */}
+              {multiDay && <View style={style.toSign} />}
+              {multiDay && getDateLabel(end)}
             </View>
           </View>
         </View>
@@ -66,13 +82,13 @@ export default function EventItem({ _id, name, briefDesc, images, startDate, end
   );
 }
 
-const useStyle = ({ theme }: { theme: AppTheme }) =>
+const useStyle = ({ theme, past }: { theme: AppTheme; past: boolean }) =>
   StyleSheet.create({
     card: {
       flexDirection: "row",
       position: "relative",
       backgroundColor: theme.colors.container,
-      elevation: 4,
+      elevation: past ? 2 : 4,
       overflow: "visible",
       borderRadius: theme.borderRadius.xs,
       minHeight: 130,
@@ -91,6 +107,9 @@ const useStyle = ({ theme }: { theme: AppTheme }) =>
       resizeMode: "cover",
       width: "100%",
       height: "100%",
+    },
+    imagePast: {
+      opacity: 0.7,
     },
     content: {
       flex: 1,
@@ -111,7 +130,8 @@ const useStyle = ({ theme }: { theme: AppTheme }) =>
       justifyContent: "center",
     },
     dateContainer: {
-      backgroundColor: theme.colors.primary,
+      // Slate for ended events, brand blue for ones still to come.
+      backgroundColor: past ? theme.colors.grey2 : theme.colors.primary,
       flexDirection: "column",
       justifyContent: "center",
       alignContent: "center",
